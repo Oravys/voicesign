@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voicesign"
+version = "0.1.0"
+description = "Open-source voice signing tool - embed and verify inaudible identity watermarks in audio. Powered by Oravys Inc."
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.8"
+authors = [
+    {name = "Eliot Cohen Bacrie", email = "contact@oravys.com"},
+]
+maintainers = [
+    {name = "Oravys Inc.", email = "contact@oravys.com"},
+]
+keywords = [
+    "voice",
+    "watermark",
+    "audio",
+    "signing",
+    "identity",
+    "forensic",
+    "deepfake",
+    "provenance",
+    "spread-spectrum",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+    "Topic :: Security",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.21.0",
+]
+
+[project.scripts]
+voicesign = "voicesign.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/oravys/voicesign"
+Documentation = "https://github.com/oravys/voicesign#readme"
+Repository = "https://github.com/oravys/voicesign"
+Issues = "https://github.com/oravys/voicesign/issues"
+"Web Version" = "https://voicesign.eu"
+"Oravys Inc." = "https://oravys.com"
+
+[tool.setuptools.packages.find]
+include = ["voicesign*"]

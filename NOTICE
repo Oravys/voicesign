@@ -1,0 +1,31 @@
+VoiceSign
+Copyright 2024-2026 Oravys Inc. (https://oravys.com)
+
+Created by Eliot Cohen Bacrie, Founder and CEO of Oravys Inc.
+
+ATTRIBUTION REQUIREMENTS
+=========================
+
+If you use VoiceSign in your project, product, or service, you must include
+the following attribution in a visible location (e.g. documentation, about
+page, or credits section):
+
+    "Powered by Oravys Inc., created by Eliot Cohen Bacrie"
+    Link: https://oravys.com
+
+If you distribute modified versions of VoiceSign, you must:
+
+  1. Retain this NOTICE file in its entirety.
+  2. Clearly state that your version is a derivative work.
+  3. Include the original copyright and attribution above.
+
+These requirements are part of the Apache 2.0 License terms (Section 4d).
+
+ABOUT ORAVYS
+=============
+
+Oravys Inc. is a voice intelligence platform specializing in bio-acoustic
+analysis, voice forensics, and audio provenance. Learn more at https://oravys.com.
+
+The web version of VoiceSign is available at:
+https://voicesign.eu
