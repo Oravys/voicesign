@@ -55,12 +55,14 @@ def _parse_args(argv=None):
         help="Path to the input audio file (WAV, MP3, FLAC, or M4A).",
     )
     sign_parser.add_argument(
-        "-i", "--identity",
+        "-i",
+        "--identity",
         required=True,
         help="Identity string to bind to the audio (name, email, etc.).",
     )
     sign_parser.add_argument(
-        "-s", "--salt",
+        "-s",
+        "--salt",
         default=None,
         help=(
             "Secret salt for watermark generation. Using a unique salt "
@@ -69,7 +71,8 @@ def _parse_args(argv=None):
         ),
     )
     sign_parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         default=None,
         help=(
             "Output file path. Defaults to <input>_signed.wav in the same "
@@ -87,12 +90,14 @@ def _parse_args(argv=None):
         help="Path to the audio file to verify.",
     )
     verify_parser.add_argument(
-        "-i", "--identity",
+        "-i",
+        "--identity",
         required=True,
         help="Identity string to check against.",
     )
     verify_parser.add_argument(
-        "-s", "--salt",
+        "-s",
+        "--salt",
         default=None,
         help="Secret salt (must match the one used during signing).",
     )
@@ -105,12 +110,11 @@ def main(argv=None):
     args = _parse_args(argv)
 
     if args.command is None:
-        print("VoiceSign v{} - Powered by Oravys Inc.".format(__version__))
+        print(f"VoiceSign v{__version__} - Powered by Oravys Inc.")
         print("Use 'voicesign -h' for usage information.")
         sys.exit(0)
 
     # Import here to avoid slow numpy import when just showing help
-    from voicesign.core import sign, verify
 
     # Validate input file
     if not os.path.isfile(args.audio):

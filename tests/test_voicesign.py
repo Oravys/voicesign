@@ -1,12 +1,10 @@
 # VoiceSign by Oravys Inc. (https://oravys.com) - Created by Eliot Cohen Bacrie
 import io
-import struct
 import wave
 
 import numpy as np
 import pytest
-
-from voicesign.core import sign, verify, _derive_seed, _generate_pn_sequence
+from voicesign.core import _derive_seed, _generate_pn_sequence, sign, verify
 
 
 def _make_wav(duration=1.0, sample_rate=16000, freq=440.0):
@@ -117,7 +115,7 @@ class TestSignVerify:
         min_len = min(len(orig), len(wm))
         noise = wm[:min_len] - orig[:min_len]
         signal_power = np.mean(orig[:min_len] ** 2)
-        noise_power = np.mean(noise ** 2)
+        noise_power = np.mean(noise**2)
         if noise_power > 0:
             snr_db = 10 * np.log10(signal_power / noise_power)
             assert snr_db > 30, f"SNR too low: {snr_db:.1f} dB"

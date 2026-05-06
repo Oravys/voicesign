@@ -37,14 +37,19 @@ Powered by Oravys Inc. (https://oravys.com) - Voice Intelligence.
 
 import sys as _sys
 
-from voicesign.core import sign, verify
+from voicesign.core import sign, sign_with_receipt, verify
 
-__version__ = "0.1.0"
+try:
+    from voicesign.crypto import generate_keypair
+except ImportError:
+    generate_keypair = None  # type: ignore[assignment]
+
+__version__ = "0.2.0"
 __author__ = "Eliot Cohen Bacrie"
 __license__ = "Apache-2.0"
 __url__ = "https://github.com/oravys/voicesign"
 
-__all__ = ["sign", "verify"]
+__all__ = ["sign", "sign_with_receipt", "verify", "generate_keypair"]
 
 # ---------------------------------------------------------------------------
 # One-time attribution notice (printed once per Python session)
@@ -53,9 +58,5 @@ __all__ = ["sign", "verify"]
 _NOTICE_ATTR = "_voicesign_notice_shown"
 
 if not getattr(_sys.modules[__name__], _NOTICE_ATTR, False):
-    _sys.stderr.write(
-        "VoiceSign v{} - Powered by Oravys Inc. (https://oravys.com)\n".format(
-            __version__
-        )
-    )
+    _sys.stderr.write(f"VoiceSign v{__version__} - Powered by Oravys Inc. (https://oravys.com)\n")
     setattr(_sys.modules[__name__], _NOTICE_ATTR, True)

@@ -7,15 +7,17 @@
 VoiceSign Core - Spread-spectrum audio watermarking engine.
 
 Embeds an inaudible watermark in the 2-6 kHz band using a pseudo-random
-noise sequence derived from a user-provided salt and identity string.
-Detection uses Pearson correlation against the expected PN sequence.
+noise sequence. Detection uses Pearson correlation against the expected
+PN sequence, with synchronization markers for temporal-shift resilience.
+
+Supports two modes:
+- Legacy: seed derived from salt + identity (shared-secret)
+- Crypto: seed derived from Ed25519 public key (asymmetric, non-repudiable)
 
 Target SNR: ~42-46 dB (imperceptible to the human ear).
-
-This module is fully self-contained. Dependencies: numpy, wave (stdlib),
-subprocess (stdlib, for ffmpeg format conversion).
 """
 
+import datetime
 import hashlib
 import io
 import logging
@@ -24,9 +26,10 @@ import struct
 import subprocess
 import tempfile
 import wave
-from typing import Dict, Optional, Union
 
 import numpy as np
+
+from voicesign.sync import embed_sync_markers, find_sync_markers
 
 logger = logging.getLogger(__name__)
 
@@ -61,31 +64,28 @@ SUPPORTED_FORMATS = {"wav", "mp3", "flac", "m4a"}
 #: supply a unique, secret salt via the ``salt`` parameter.
 _DEFAULT_SALT = "voicesign-default-salt"
 
+#: Sync marker interval in seconds.
+_SYNC_INTERVAL: float = 2.0
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
 
+def _resolve_seed(
+    salt: str | None,
+    identity: str,
+    public_key: bytes | None,
+) -> int:
+    if public_key is not None:
+        from voicesign.crypto import derive_seed_from_pubkey
+        return derive_seed_from_pubkey(public_key)
+    effective_salt = salt if salt else _DEFAULT_SALT
+    return _derive_seed(effective_salt, identity)
+
+
 def _derive_seed(salt: str, identity: str) -> int:
-    """
-    Derive a deterministic PRNG seed from a salt and user identity.
-
-    Uses SHA-256 of (salt + identity) truncated to a 32-bit unsigned
-    integer so that numpy RandomState receives a reproducible seed.
-
-    Parameters
-    ----------
-    salt : str
-        Secret or unique salt string.
-    identity : str
-        User identity string (name, email, or any unique identifier).
-
-    Returns
-    -------
-    int
-        A 32-bit unsigned integer seed.
-    """
     combined = (salt + identity).encode("utf-8")
     digest = hashlib.sha256(combined).digest()
     seed = struct.unpack(">I", digest[:4])[0]
@@ -144,8 +144,7 @@ def _convert_to_wav(audio_bytes: bytes, file_format: str) -> bytes:
 
     if fmt not in SUPPORTED_FORMATS:
         raise ValueError(
-            f"Unsupported format: {fmt}. "
-            f"Supported: {', '.join(sorted(SUPPORTED_FORMATS))}"
+            f"Unsupported format: {fmt}. " f"Supported: {', '.join(sorted(SUPPORTED_FORMATS))}"
         )
 
     tmp_in = None
@@ -160,12 +159,18 @@ def _convert_to_wav(audio_bytes: bytes, file_format: str) -> bytes:
         tmp_out.close()
 
         cmd = [
-            "ffmpeg", "-y",
-            "-i", tmp_in.name,
-            "-ac", "1",            # mono
-            "-ar", "16000",        # 16 kHz
-            "-sample_fmt", "s16",  # 16-bit
-            "-f", "wav",
+            "ffmpeg",
+            "-y",
+            "-i",
+            tmp_in.name,
+            "-ac",
+            "1",  # mono
+            "-ar",
+            "16000",  # 16 kHz
+            "-sample_fmt",
+            "s16",  # 16-bit
+            "-f",
+            "wav",
             tmp_out.name,
         ]
         result = subprocess.run(
@@ -177,8 +182,7 @@ def _convert_to_wav(audio_bytes: bytes, file_format: str) -> bytes:
         if result.returncode != 0:
             stderr_text = result.stderr.decode("utf-8", errors="replace")
             raise RuntimeError(
-                f"ffmpeg conversion failed (rc={result.returncode}): "
-                f"{stderr_text[:500]}"
+                f"ffmpeg conversion failed (rc={result.returncode}): " f"{stderr_text[:500]}"
             )
 
         with open(tmp_out.name, "rb") as f:
@@ -242,9 +246,7 @@ def _wav_to_samples(wav_bytes: bytes):
     return samples, params
 
 
-def _samples_to_wav(
-    samples: np.ndarray, sample_rate: int, sampwidth: int = 2
-) -> bytes:
+def _samples_to_wav(samples: np.ndarray, sample_rate: int, sampwidth: int = 2) -> bytes:
     """
     Encode float64 samples back to WAV bytes (mono, 16-bit by default).
 
@@ -316,16 +318,26 @@ def _get_band_indices(fft_length: int, sample_rate: int):
 def sign(
     audio_bytes: bytes,
     identity: str,
-    salt: Optional[str] = None,
+    salt: str | None = None,
     file_format: str = "wav",
+    *,
+    private_key: bytes | None = None,
+    public_key: bytes | None = None,
 ) -> bytes:
     """
     Embed an inaudible spread-spectrum watermark tied to an identity.
 
     The watermark is embedded in the 2-6 kHz frequency band using a
-    pseudo-random noise sequence. The result is imperceptible to the
-    human ear (target SNR ~42-46 dB) but can be reliably detected by
-    the ``verify`` function.
+    pseudo-random noise sequence, with synchronization markers for
+    temporal-shift resilience.
+
+    Two modes:
+
+    - **Legacy** (default): seed derived from salt + identity.
+    - **Crypto**: pass ``public_key`` (and optionally ``private_key``)
+      to derive the seed from an Ed25519 public key instead. Use
+      ``sign_with_receipt()`` for the full crypto workflow with a
+      non-repudiable receipt.
 
     Parameters
     ----------
@@ -333,35 +345,20 @@ def sign(
         Raw audio file content (WAV, MP3, FLAC, or M4A).
     identity : str
         User identity string (name, email, or any unique identifier).
-        This is what gets cryptographically bound to the audio.
     salt : str, optional
-        Secret salt for seed derivation. Using a unique salt prevents
-        third parties from forging watermarks. If not provided, a
-        default salt is used (not recommended for production).
+        Secret salt for seed derivation (legacy mode only).
     file_format : str
-        Input format hint (default ``"wav"``). Used only when the input
-        is not WAV and needs conversion via ffmpeg.
+        Input format hint (default ``"wav"``).
+    private_key : bytes, optional
+        Raw 32-byte Ed25519 private key (crypto mode).
+    public_key : bytes, optional
+        Raw 32-byte Ed25519 public key (crypto mode). When provided,
+        the seed is derived from this key instead of salt + identity.
 
     Returns
     -------
     bytes
         Watermarked audio as 16-bit mono WAV.
-
-    Raises
-    ------
-    ValueError
-        If the audio is empty, exceeds 50 MB, the format is unsupported,
-        or the identity string is empty.
-    RuntimeError
-        If ffmpeg conversion fails (non-WAV inputs only).
-
-    Examples
-    --------
-    >>> with open("recording.wav", "rb") as f:
-    ...     audio = f.read()
-    >>> signed = sign(audio, "Alice Johnson", salt="my-secret")
-    >>> with open("signed.wav", "wb") as f:
-    ...     f.write(signed)
     """
     if not audio_bytes:
         raise ValueError("Empty audio data")
@@ -373,9 +370,6 @@ def sign(
     if not identity or not identity.strip():
         raise ValueError("Identity string must not be empty")
 
-    effective_salt = salt if salt else _DEFAULT_SALT
-
-    # Convert to WAV if needed
     wav_bytes = _convert_to_wav(audio_bytes, file_format)
     samples, params = _wav_to_samples(wav_bytes)
     sample_rate = params.framerate
@@ -384,10 +378,8 @@ def sign(
     if segment_len < 16:
         raise ValueError("Audio sample rate too low for watermark embedding")
 
-    # Derive PN seed from salt + identity
-    seed = _derive_seed(effective_salt, identity)
+    seed = _resolve_seed(salt, identity, public_key)
 
-    # Get frequency band indices
     idx_low, idx_high = _get_band_indices(segment_len, sample_rate)
     band_width = idx_high - idx_low
 
@@ -402,42 +394,101 @@ def sign(
         end = start + segment_len
         segment = watermarked[start:end]
 
-        # Per-segment seed variation to avoid repetition
         seg_seed = (seed + seg_idx) & 0xFFFFFFFF
         pn = _generate_pn_sequence(seg_seed, band_width)
 
-        # FFT
         spectrum = np.fft.rfft(segment)
-
-        # Add PN sequence to the real part in the watermark band
         spectrum[idx_low:idx_high] = (
             spectrum[idx_low:idx_high].real + EMBED_STRENGTH * pn
         ) + 1j * spectrum[idx_low:idx_high].imag
-
-        # Inverse FFT
         watermarked[start:end] = np.fft.irfft(spectrum, n=segment_len)
 
+    # Embed sync markers for temporal-shift resilience
+    watermarked = embed_sync_markers(
+        watermarked, sample_rate, seed, interval_sec=_SYNC_INTERVAL,
+    )
+
     logger.info(
-        "VoiceSign: watermark embedded - %d segments, sr=%d",
+        "VoiceSign: watermark embedded - %d segments, sr=%d, mode=%s",
         n_segments,
         sample_rate,
+        "crypto" if public_key else "legacy",
     )
 
     return _samples_to_wav(watermarked, sample_rate)
 
 
+def sign_with_receipt(
+    audio_bytes: bytes,
+    identity: str,
+    private_key: bytes,
+    public_key: bytes,
+    file_format: str = "wav",
+) -> dict:
+    """
+    Sign audio with Ed25519 and return a non-repudiable receipt.
+
+    This is the full crypto workflow: embeds the watermark using the
+    public key as seed, then produces an Ed25519 signature binding
+    the signer identity, audio hash, and timestamp together.
+
+    Parameters
+    ----------
+    audio_bytes : bytes
+        Raw audio file content.
+    identity : str
+        Signer identity string.
+    private_key : bytes
+        Raw 32-byte Ed25519 private key.
+    public_key : bytes
+        Raw 32-byte Ed25519 public key.
+    file_format : str
+        Input format hint (default ``"wav"``).
+
+    Returns
+    -------
+    dict
+        Keys: ``audio`` (watermarked WAV bytes), ``signature`` (64-byte
+        Ed25519 signature), ``public_key`` (32-byte public key),
+        ``timestamp`` (ISO-8601 string), ``audio_hash`` (SHA-256 hex).
+    """
+    from voicesign.crypto import sign_payload
+
+    signed_audio = sign(
+        audio_bytes, identity, file_format=file_format,
+        public_key=public_key,
+    )
+
+    audio_hash = hashlib.sha256(signed_audio).digest()
+    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    signature = sign_payload(private_key, identity, audio_hash, timestamp)
+
+    return {
+        "audio": signed_audio,
+        "signature": signature,
+        "public_key": public_key,
+        "timestamp": timestamp,
+        "audio_hash": audio_hash.hex(),
+    }
+
+
 def verify(
     audio_bytes: bytes,
     identity: str,
-    salt: Optional[str] = None,
+    salt: str | None = None,
     file_format: str = "wav",
-) -> Dict[str, Union[bool, float, str]]:
+    *,
+    public_key: bytes | None = None,
+    signature: bytes | None = None,
+    timestamp: str | None = None,
+) -> dict[str, bool | float | str]:
     """
     Check whether audio contains a watermark for a given identity.
 
-    Computes the average Pearson correlation between the audio's
-    frequency-domain coefficients and the expected pseudo-random
-    noise sequence for the given identity and salt.
+    Uses synchronization markers to recover segment alignment even if
+    the audio has been trimmed or padded. Falls back to position-0
+    alignment if no sync markers are found.
 
     Parameters
     ----------
@@ -446,36 +497,31 @@ def verify(
     identity : str
         The identity to test against.
     salt : str, optional
-        The same salt that was used during signing. Must match exactly
-        for detection to succeed.
+        Salt for seed derivation (legacy mode).
     file_format : str
         Input format hint (default ``"wav"``).
+    public_key : bytes, optional
+        Raw 32-byte Ed25519 public key (crypto mode). When provided,
+        the seed is derived from this key instead of salt + identity.
+    signature : bytes, optional
+        64-byte Ed25519 signature to verify (requires ``public_key``
+        and ``timestamp``).
+    timestamp : str, optional
+        ISO-8601 timestamp that was used when signing.
 
     Returns
     -------
     dict
-        A dictionary with the following keys:
-
-        - ``detected`` (bool) - True if correlation exceeds the threshold.
-        - ``correlation`` (float) - Average Pearson correlation across segments.
-        - ``confidence`` (float) - Normalised confidence score in [0, 1].
-        - ``identity_match`` (str) - The identity string tested (echoed back).
-
-    Examples
-    --------
-    >>> with open("signed.wav", "rb") as f:
-    ...     audio = f.read()
-    >>> result = verify(audio, "Alice Johnson", salt="my-secret")
-    >>> print(result["detected"])
-    True
-    >>> print(f"Confidence: {result['confidence']:.2%}")
-    Confidence: 95.00%
+        Keys: ``detected``, ``correlation``, ``confidence``,
+        ``identity_match``, ``sync_aligned`` (bool), and optionally
+        ``signature_valid`` (bool) when crypto params are provided.
     """
     _empty_result = {
         "detected": False,
         "correlation": 0.0,
         "confidence": 0.0,
         "identity_match": identity,
+        "sync_aligned": False,
     }
 
     if not audio_bytes:
@@ -488,9 +534,6 @@ def verify(
     if not identity or not identity.strip():
         raise ValueError("Identity string must not be empty")
 
-    effective_salt = salt if salt else _DEFAULT_SALT
-
-    # Convert to WAV if needed
     wav_bytes = _convert_to_wav(audio_bytes, file_format)
     samples, params = _wav_to_samples(wav_bytes)
     sample_rate = params.framerate
@@ -499,7 +542,7 @@ def verify(
     if segment_len < 16:
         return _empty_result
 
-    seed = _derive_seed(effective_salt, identity)
+    seed = _resolve_seed(salt, identity, public_key)
 
     try:
         idx_low, idx_high = _get_band_indices(segment_len, sample_rate)
@@ -507,13 +550,90 @@ def verify(
         return _empty_result
 
     band_width = idx_high - idx_low
-    n_segments = len(samples) // segment_len
 
-    if n_segments == 0:
+    # Try both position-0 and sync-marker alignment, keep the best
+    n_seg_0 = len(samples) // segment_len
+    if n_seg_0 == 0:
         return _empty_result
 
-    correlations = []
+    corr_0 = _correlate_segments(
+        samples, n_seg_0, segment_len, seed,
+        idx_low, idx_high, band_width,
+    )
+    avg_0 = float(np.mean(corr_0)) if corr_0 else 0.0
 
+    markers = find_sync_markers(
+        samples, sample_rate, seed, interval_sec=_SYNC_INTERVAL,
+    )
+
+    avg_sync = -1.0
+    corr_sync: list[float] = []
+    if markers and markers[0] > 0:
+        usable = samples[markers[0]:]
+        n_seg_s = len(usable) // segment_len
+        if n_seg_s > 0:
+            corr_sync = _correlate_segments(
+                usable, n_seg_s, segment_len, seed,
+                idx_low, idx_high, band_width,
+            )
+            avg_sync = float(np.mean(corr_sync)) if corr_sync else -1.0
+
+    if avg_sync > avg_0:
+        avg_correlation = avg_sync
+        correlations = corr_sync
+        sync_aligned = True
+    else:
+        avg_correlation = avg_0
+        correlations = corr_0
+        sync_aligned = bool(markers) and markers[0] == 0
+
+    detected = avg_correlation > DETECTION_THRESHOLD
+
+    if avg_correlation <= DETECTION_THRESHOLD:
+        confidence = 0.0
+    else:
+        confidence = min(
+            1.0,
+            (avg_correlation - DETECTION_THRESHOLD) / (1.0 - DETECTION_THRESHOLD),
+        )
+
+    result = {
+        "detected": detected,
+        "correlation": round(avg_correlation, 6),
+        "confidence": round(confidence, 6),
+        "identity_match": identity,
+        "sync_aligned": sync_aligned,
+    }
+
+    # Ed25519 signature verification
+    if signature is not None and public_key is not None and timestamp is not None:
+        from voicesign.crypto import verify_signature
+        audio_hash = hashlib.sha256(audio_bytes).digest()
+        result["signature_valid"] = verify_signature(
+            public_key, identity, audio_hash, timestamp, signature,
+        )
+
+    logger.info(
+        "VoiceSign: verification - detected=%s, corr=%.4f, conf=%.4f, sync=%s",
+        detected,
+        avg_correlation,
+        confidence,
+        sync_aligned,
+    )
+
+    return result
+
+
+def _correlate_segments(
+    samples: np.ndarray,
+    n_segments: int,
+    segment_len: int,
+    seed: int,
+    idx_low: int,
+    idx_high: int,
+    band_width: int,
+) -> list[float]:
+    correlations = []
     for seg_idx in range(n_segments):
         start = seg_idx * segment_len
         end = start + segment_len
@@ -525,7 +645,6 @@ def verify(
         spectrum = np.fft.rfft(segment)
         band_real = spectrum[idx_low:idx_high].real
 
-        # Pearson correlation between band coefficients and PN sequence
         if np.std(band_real) < 1e-12 or np.std(pn) < 1e-12:
             correlations.append(0.0)
             continue
@@ -534,8 +653,7 @@ def verify(
         mean_pn = np.mean(pn)
         num = np.sum((band_real - mean_br) * (pn - mean_pn))
         den = np.sqrt(
-            np.sum((band_real - mean_br) ** 2)
-            * np.sum((pn - mean_pn) ** 2)
+            np.sum((band_real - mean_br) ** 2) * np.sum((pn - mean_pn) ** 2)
         )
 
         if den < 1e-12:
@@ -543,29 +661,4 @@ def verify(
         else:
             correlations.append(float(num / den))
 
-    avg_correlation = float(np.mean(correlations)) if correlations else 0.0
-    detected = avg_correlation > DETECTION_THRESHOLD
-
-    # Map correlation from [threshold, 1] to [0, 1], clamped
-    if avg_correlation <= DETECTION_THRESHOLD:
-        confidence = 0.0
-    else:
-        confidence = min(
-            1.0,
-            (avg_correlation - DETECTION_THRESHOLD)
-            / (1.0 - DETECTION_THRESHOLD),
-        )
-
-    logger.info(
-        "VoiceSign: verification - detected=%s, corr=%.4f, conf=%.4f",
-        detected,
-        avg_correlation,
-        confidence,
-    )
-
-    return {
-        "detected": detected,
-        "correlation": round(avg_correlation, 6),
-        "confidence": round(confidence, 6),
-        "identity_match": identity,
-    }
+    return correlations

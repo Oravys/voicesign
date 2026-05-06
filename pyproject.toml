@@ -47,6 +47,14 @@ dependencies = [
     "numpy>=1.21.0",
 ]
 
+[project.optional-dependencies]
+crypto = [
+    "cryptography>=41.0.0",
+]
+all = [
+    "cryptography>=41.0.0",
+]
+
 [project.scripts]
 voicesign = "voicesign.cli:main"
 
