@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "voicesign"
-version = "0.1.0"
-description = "Open-source voice signing tool - embed and verify inaudible identity watermarks in audio. Powered by Oravys Inc."
+version = "0.2.0"
+description = "Open-source voice signing - cryptographically sign voice recordings with inaudible watermarks tied to your identity. Ed25519 crypto, sync markers, codec-resilient. By Oravys Inc."
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
 requires-python = ">=3.8"
 authors = [
     {name = "Eliot Cohen Bacrie", email = "contact@oravys.com"},
@@ -30,7 +30,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
+
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
